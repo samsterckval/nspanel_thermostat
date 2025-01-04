@@ -1,24 +1,116 @@
 # Set some variables for convenience
 substitutions:
-  node_name: nspanel
-  device_name: NSPanel
+  node_name: nspanel01
+  device_name: NSPanel01
   target_temp_home: 21.0 °C
-  target_temp_eco: 18.0 °C
+  target_temp_away: 15.0 °C
+  ha_server_ip: 192.168.0.110
+  relay_ip: 192.168.0.17
+  tft_file_url: "http://${ha_server_ip}/local/nspanel_thermostat.tft"
+  relay_base_url: "http://${relay_ip}/relay/0"
+  relay_on_url: "${relay_base_url}?turn=on"
+  relay_off_url: "${relay_base_url}?turn=off"
+
+globals:
+  - id: away_target
+    type: float
+    restore_value: true
+
+  - id: home_target
+    type: float
+    restore_value: true
+
+# It seems this is not needed anymore in the newer versions, however this is untested for new nspanels
+# external_components:
+#   - source: github://pr#5825
+#     components: [nextion]
+#     refresh: 1s
+
+# Configure UART for communicating with the screen
+uart:
+  id: tf_uart
+  tx_pin: 16
+  rx_pin: 17
+  baud_rate: 115200
+
+# Configure the screen
+display:
+  - platform: nextion
+    id: disp1
+    uart_id: tf_uart
+    tft_url: ${tft_file_url}
+    on_setup:
+      then:
+        - number.set:
+            id: brightness
+            value: 30
+        - lambda: |-
+            id(disp1).set_component_text_printf(
+              "page0.intTemp", "%.1f""\xb0", id(temperature).state);
+            id(disp1).set_component_text_printf(
+              "page0.extTemp", "%.1f""\xb0", id(ext_temperature).state);
+            id(disp1).set_component_text_printf("page0.btn0", "VERWARMING");
+            id(disp1).set_component_text_printf("page0.btn1", "LICHT");
+        - script.execute: tft_date_update
+        - script.execute: tft_time_update
+        - script.execute: tft_weather_update
 
 esphome:
   name: $node_name
   comment: $device_name
+  friendly_name: nspanel01
+
+  on_boot:
+    priority: 200.0
+    then:
+      - logger.log: After boot check-up
+      - wait_until:
+          condition:
+            - api.connected:
+          timeout: 60s
+      - wait_until:
+          condition:
+            - lambda: !lambda return disp1->is_setup();
+          timeout: 20s
+      - script.execute: exit_reparse
+      - wait_until:
+          condition:
+            - lambda: !lambda return disp1->is_setup();
+          timeout: 20s
+      - lambda: |-
+          static const char *const TAG = "on_boot";
+          if (not disp1->is_setup()) {
+            ESP_LOGE(TAG, "No response from Nextion display");
+            ESP_LOGD(TAG, "Turn off Nextion");
+            screen_power->turn_off();
+            delay(1500);
+            ESP_LOGD(TAG, "Turn on Nextion");
+            screen_power->turn_on();
+          }
 
 esp32:
   board: esp32dev
+  framework: 
+    type: esp-idf
+    
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
 
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
-  # Optional manual IP
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Nspanel01 Fallback Hotspot"
+    password: "wybynYtgSdwp"
+
+  # Set manual static ip
   manual_ip:
-    static_ip: 192.168.10.30
-    gateway: 192.168.10.1
+    static_ip: 192.168.0.129
+    gateway: 192.168.0.1
     subnet: 255.255.255.0
     
 # Enable logging
@@ -27,20 +119,18 @@ logger:
   logs:
     sensor: ERROR
 
-# Enable wireless updates
-ota:
-  password: !secret ota_password
+http_request:
+  useragent: esphome/device/nspanel01
+  timeout: 10s
+  follow_redirects: false
+  verify_ssl: false
 
 # Enable Home Assistant API
-api:
+api:  
+  encryption:
+    key: "9lZMgNXCcMn5pxVL6uPhabzGXztOg9eYqowlk/g2EZE="
+
   services:
-    # Service to play a song
-    - service: play_rtttl
-      variables:
-        song_str: string
-      then:
-        - rtttl.play:
-            rtttl: !lambda 'return song_str;'
     - service: upload_tft
       then:
         - lambda: 'id(disp1)->upload_tft();'
@@ -53,7 +143,7 @@ api:
 time:
   - platform: homeassistant
     id: homeassistant_time
-    timezone: Europe/Madrid
+    timezone: Europe/Brussels
     on_time:
       - seconds: 0
         minutes: '*'
@@ -78,20 +168,19 @@ binary_sensor:
     on_press:
       then:
         - climate.control:
-            id: caldera
-            mode: !lambda |-
-              if (id(caldera).mode==CLIMATE_MODE_OFF)
+            id: heater
+            preset: !lambda |-
+              if (id(heater).preset==CLIMATE_PRESET_AWAY)
               {
-                return CLIMATE_MODE_HEAT;
+                return CLIMATE_PRESET_HOME;
               }
               else
               {
-                return CLIMATE_MODE_OFF;
+                return CLIMATE_PRESET_AWAY;
               }
         - script.execute: tft_wake_up
 
-  # Switches between a predefined "night" or "sleep" target temperature and a "normal" target temperature
-  # this will be also automated in homeassistant, but it is nice to have a button for it
+  # Switch relay 1 for light
   - platform: gpio
     name: $device_name Right Button
     pin:
@@ -99,17 +188,7 @@ binary_sensor:
       inverted: true  
     on_press:
       then:
-        - climate.control:
-            id: caldera
-            preset: !lambda |-
-              if (id(caldera).preset==CLIMATE_PRESET_ECO)
-              {
-                return CLIMATE_PRESET_HOME;
-              }
-              else
-              {
-                return CLIMATE_PRESET_ECO;
-              }
+        - switch.toggle: relay_1
         - script.execute: tft_wake_up
 
   - platform: nextion
@@ -119,8 +198,8 @@ binary_sensor:
     on_press:
       then:
         - climate.control:
-            id: caldera
-            target_temperature: !lambda "return id(caldera).target_temperature + 0.1;"
+            id: heater
+            target_temperature: !lambda "return floor((id(heater).target_temperature + 0.5) * 2.0)/2.0;"
 
   - platform: nextion
     name: $device_name Down Button
@@ -129,8 +208,8 @@ binary_sensor:
     on_press:
       then:
         - climate.control:
-            id: caldera
-            target_temperature: !lambda "return id(caldera).target_temperature - 0.1;"
+            id: heater
+            target_temperature: !lambda "return floor((id(heater).target_temperature - 0.5) * 2.0)/2.0;"
 
 sensor:
   - platform: wifi_signal
@@ -158,7 +237,7 @@ sensor:
     id: ntc_source
     pin: 38
     update_interval: 10s
-    attenuation: 11db
+    attenuation: 12db
 
   - platform: resistance
     id: resistance_sensor
@@ -187,7 +266,7 @@ sensor:
   # Grab current temperature from Home Assistant
   - platform: homeassistant
     id: ext_temperature
-    entity_id: sensor.exterior_temperature
+    entity_id: weather.buienradar
     attribute: temperature
     on_value:
       then:
@@ -195,7 +274,7 @@ sensor:
 
   - platform: homeassistant
     id: wind_speed
-    entity_id: weather.aemet_daily
+    entity_id: weather.buienradar
     attribute: wind_speed
     unit_of_measurement: "km/h"
     on_value:
@@ -216,12 +295,23 @@ sensor:
 text_sensor:
   - platform: homeassistant
     id: current_weather
-    entity_id: weather.aemet_daily
+    entity_id: weather.buienradar
     on_value:
       then:
         - script.execute: tft_weather_update
 
 script:
+  - id: exit_reparse
+    mode: restart
+    then:
+      - logger.log: "Exit reparse"
+      - uart.write:
+          id: tf_uart
+          data: "DRAKJHSUYDGBNCJHGJKSHBDN"
+      - uart.write:
+          id: tf_uart
+          data: [0xFF, 0xFF, 0xFF]
+
   - id: tft_weather_update
     then:
       - lambda: |-
@@ -239,13 +329,13 @@ script:
   - id: tft_date_update
     then:
       - lambda: |-
-          int dia = id(homeassistant_time).now().day_of_month;
-          int mes = id(homeassistant_time).now().month;
-          if ((dia>0)&&(dia<32)&&(mes>0)&&(mes<13))
+          int day = id(homeassistant_time).now().day_of_month;
+          int month = id(homeassistant_time).now().month;
+          if ((day>0)&&(day<32)&&(month>0)&&(month<13))
           {
-            char const *dia_semana[] = {"Domingo", "Lunes", "Martes", "Mierco.", "Jueves", "Viernes", "Sabado"};
-            const char *str = dia_semana[id(homeassistant_time).now().day_of_week-1]; // range [1-7], Domingo=1
-            id(disp1).set_component_text_printf("page0.date", "%s %02i/%02i", str, dia, mes);
+            char const *weekdays[] = {"Zondag", "Maandag", "Dinsdag", "Woensdag.", "Donderdag", "Vrijdag", "Zaterdag"};
+            const char *str = weekdays[id(homeassistant_time).now().day_of_week-1]; // range [1-7], Zondag=1
+            id(disp1).set_component_text_printf("page0.date", "%s %02i/%02i", str, day, month);
           }
   - id: tft_time_update
     then:
@@ -260,14 +350,13 @@ script:
           id(disp1).send_command_printf("dim=page0.brightness.val");
 
 # Define some outputs
-switch:
-  # Relay 2 is the thermostat switch, Relay 1 was physically removed!
+switch:  
   - platform: gpio
-    name: $device_name Relay
-    id: relay_2
-    internal: true # it should not be activated directly by home assitant
+    name: $device_name Relay1
+    id: relay_1
+    internal: False
     pin:
-      number: 19
+      number: 22
 
   # Pin 4 always needs to be on to power up the display
   - platform: gpio
@@ -326,90 +415,115 @@ number:
             id(disp1).send_command_printf("page0.sleep_timeout.val=%i", (int)x);  // set the timeout
             id(disp1).send_command_printf("page0.sleep_cnt.val=%i", (int)x);      // reset the counter to its maximum
 
-# Configure the internal bleeper
-output:
-  - platform: ledc
-    id: buzzer_out
-    pin:
-      number: 21
-
-# Enable ringtone music support
-rtttl:
-  id: buzzer
-  output: buzzer_out
-
-# Configure UART for communicating with the screen
-uart:
-  id: tf_uart
-  tx_pin: 16
-  rx_pin: 17
-  baud_rate: 115200
-
-# Configure the screen
-display:
-  - platform: nextion
-    id: disp1
-    exit_reparse_on_start: true
-    uart_id: tf_uart
-    tft_url: !secret panel_file
-    on_setup:
-      then:
-        - number.set:
-            id: brightness
-            value: 30
-        - lambda: |-
-            id(disp1).set_component_text_printf(
-              "page0.intTemp", "%.1f""\xb0", id(temperature).state);
-            id(disp1).set_component_text_printf(
-              "page0.extTemp", "%.1f""\xb0", id(ext_temperature).state);
-            id(disp1).set_component_text_printf("page0.btn0", "ENCENDER");
-            id(disp1).set_component_text_printf("page0.btn1", "MODO ECO");
-        - script.execute: tft_date_update
-        - script.execute: tft_time_update
-        - script.execute: tft_weather_update
-
-#        - rtttl.play: "twobits:d=4,o=5,b=220:c6,8g,8g,a,g,p,b,c6"
 
 # Single-point thermostat (for heating only)
 climate:
   - platform: thermostat
-    id: caldera
+    id: heater
     name:  $device_name Thermostat
     sensor: temperature
     preset:
-      # Sleep temperature
-      - name: eco
-        default_target_temperature_low: $target_temp_eco
       # Normal heating temperature
       - name: home
         default_target_temperature_low: $target_temp_home
-    heat_deadband: 0.2
-    heat_overrun: 0.2
-    min_heating_off_time: 300s
-    min_heating_run_time: 300s
-    min_idle_time: 30s
+      - name: away
+        default_target_temperature_low: $target_temp_away
+    heat_deadband: 0.1
+    heat_overrun: 0.0
+    min_heating_off_time: 30s
+    min_heating_run_time: 30s
+    min_idle_time: 1s
     heat_action:
-      - switch.turn_on: relay_2
+      - http_request.post:
+          url: ${relay_on_url}
+          on_error:
+            - logger.log: "Heating action failed!"
     idle_action:
-      - switch.turn_off: relay_2
-    on_state:
+      - http_request.post:
+          url: ${relay_off_url}
+          on_error:
+            - logger.log: "Idle action failed!"
+    on_control:
       - lambda: |- 
-          id(disp1).set_component_text_printf("page0.setTemp", "%.1f""\xb0", id(caldera).target_temperature);
+          static auto last_preset = x.get_preset().value_or(CLIMATE_PRESET_AWAY);
+          static auto last_temperature = 0.0F;
 
-          if (id(caldera).mode==CLIMATE_MODE_OFF)
-            id(disp1).set_component_text_printf("page0.btn0", "ENCENDER");
-          else
-            id(disp1).set_component_text_printf("page0.btn0", "APAGAR");
+          if ( x.get_preset().has_value() && (x.get_preset().value() != last_preset) )
+          {
+            /**********************************/
+            /*  This means we changed preset  */
+            /**********************************/
 
-          if (id(caldera).preset==CLIMATE_PRESET_ECO)
-            id(disp1).set_component_text_printf("page0.btn1", "MODO ECO");
-          else
-            id(disp1).set_component_text_printf("page0.btn1", "MODO NORMAL");
+            ESP_LOGD("climate", "State '%s' -> '%s'",
+                                  climate::climate_preset_to_string(last_preset),
+                                  climate::climate_preset_to_string(x.get_preset().value()));
 
-          if (id(caldera).action==CLIMATE_ACTION_HEATING)
-            id(disp1).set_component_pic("page0.picBurn", 13); 
+            last_preset = x.get_preset().value();
+
+            switch(last_preset)
+            {
+              case CLIMATE_PRESET_AWAY:
+                {
+                  x.set_target_temperature(id(away_target));
+                  id(disp1).set_component_pic("page0.picBurn", 22);
+                  break;
+                }
+              case CLIMATE_PRESET_HOME:
+                {
+                  x.set_target_temperature(id(home_target));
+                  id(disp1).set_component_pic("page0.picBurn", 13);
+                  break;
+                }
+              default:
+                {
+                  ESP_LOGD("climate", "unknown preset set");
+                }
+            }
+
+            ESP_LOGD("climate", "Loaded %s temperature %.1f°C", climate::climate_preset_to_string(last_preset), x.get_target_temperature().value());
+            last_temperature = x.get_target_temperature().value();
+          }
           else
-            id(disp1).set_component_pic("page0.picBurn", 22);
+          {
+            /**********************************************************/
+            /*  This means this is at most just a temperature adjust  */
+            /*  in this case, save it to the correct global.          */
+            /**********************************************************/
+
+            if ( x.get_target_temperature().has_value() && (x.get_target_temperature().value() != last_temperature) )
+            {
+              ESP_LOGD("climate", "Target temperature changed from %.1f°C to %.1f°C",
+                     last_temperature, x.get_target_temperature().value());
+              
+              last_temperature = x.get_target_temperature().value();
+
+              switch( id(heater).preset.value_or(CLIMATE_PRESET_NONE) )
+              {
+                case CLIMATE_PRESET_HOME:
+                  {
+                    id(home_target) = last_temperature;  // Save home target
+                    break;
+                  }
+                case CLIMATE_PRESET_AWAY:
+                  {
+                    id(away_target) = last_temperature;  // Save away target
+                    break;
+                  }
+                default:
+                  {
+                    ESP_LOGD("climate", "unknown preset set");
+                  }
+              }
+
+              ESP_LOGD("climate", "Saved %s temperature %.1f°C",
+                                    climate::climate_preset_to_string(id(heater).preset.value_or(CLIMATE_PRESET_NONE)),
+                                    last_temperature);
+            }
+          }
+
+          // Set the front end display text
+          id(disp1).set_component_text_printf("page0.setTemp", "%.1f""\xb0", x.get_target_temperature().value_or(id(heater).target_temperature));
+
     visual:
       min_temperature: 10
       max_temperature: 30

@@ -1,3 +1,18 @@
+# Fork differences
+
+- Switch to a "room controller" style where:
+  - 1 button switches heating between "HOME" and "AWAY"
+  - 1 button switches the 1st internal relay to control room lights
+  - Heating is controlled trough HTTP, assuming either a shelly style device is used, or a connected radiator knob
+  - No more hardware modifications required
+- Language changed to dutch
+  - Maybe I'll add language strings as subs later
+- Compiles with 2024.12 ESPHome version
+- Removed buzzer
+- Target temperatures for HOME & AWAY are saved to flash when the mode is exited
+- Weather sensor set to "buienradar", since these give good results for Belgium & Netherland
+
+
 # NSPanel Thermostat
 
 This is the configuration needed to run the Sonoff NSPanel with ESPHome firmware and custom Nextion TFT panel running as a thermostat for a home gas heating system.
