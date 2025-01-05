@@ -11,6 +11,7 @@
 - Removed buzzer
 - Target temperatures for HOME & AWAY are saved to flash when the mode is exited
 - Weather sensor set to "buienradar", since these give good results for Belgium & Netherland
+- Switched to ESP-IDF framework
 
 
 # NSPanel Thermostat

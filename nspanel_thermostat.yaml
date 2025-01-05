@@ -51,6 +51,7 @@ display:
               "page0.extTemp", "%.1f""\xb0", id(ext_temperature).state);
             id(disp1).set_component_text_printf("page0.btn0", "VERWARMING");
             id(disp1).set_component_text_printf("page0.btn1", "LICHT");
+            id(disp1).set_component_text_printf("page0.setTemp", "%.1f""\xb0", id(heater).target_temperature);
         - script.execute: tft_date_update
         - script.execute: tft_time_update
         - script.execute: tft_weather_update
@@ -128,7 +129,7 @@ http_request:
 # Enable Home Assistant API
 api:  
   encryption:
-    key: "9lZMgNXCcMn5pxVL6uPhabzGXztOg9eYqowlk/g2EZE="
+    key: !secret api_key
 
   services:
     - service: upload_tft
